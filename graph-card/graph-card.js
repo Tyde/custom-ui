@@ -6,29 +6,40 @@ class GraphCard extends HTMLElement {
         this._hass = hass;
         if (!this.content) {
           const card = document.createElement('ha-card');
+          
           this.content = document.createElement('div');
-          this.content.className = 'card';
-          this.content.style.height = this.graph_height + 'px';
-          this.content.style.padding = '0px 16px 16px 16px';
+          
+          this.content.innerHTML = ''
+          
+          const graphContent = document.createElement('div');
+          graphContent.className = 'card';
+          graphContent.style.height = this.graph_height + 'px';
+          graphContent.style.padding = '0px 16px 16px 16px';
+          
+          this.content.appendChild(graphContent)
           card.appendChild(this.content);
           this.appendChild(card);
-          this.initGraph(this.content);
+          this.initGraph(graphContent);
         }
     }
 
     initGraph(element) {
-        var loading_options = {text: 'Bezig met laden...'};
+        var loading_options = {text: 'Lädt...'};
     
-        var _this = this;
-    
-        getScript("/local/custom-lovelace/graph-card/echarts.min.js", function(){
-            _this.graph = echarts.init(element);
-        	_this.graph.showLoading('default', loading_options);
-        	
+
+        var callback = function(){
+            this.graph = echarts.init(element);
+        	this.graph.showLoading('default', loading_options);
+        	console.log("ECharts loaded: "+this.title);
+        	console.log(this.graph)
         	window.onresize = function(event) {
-		        _this.graph.resize();
+		        this.graph.resize();
             };
-        });
+            
+            this.getHistory();
+        }.bind(this)
+        //var cbF = callback.bind(this)
+        getScript("/local/custom-lovelace/graph-card/echarts.js", callback);
     
         this.initial_options = {
         	tooltip : {
@@ -40,11 +51,15 @@ class GraphCard extends HTMLElement {
                     }
                 }
             },
+            title: {
+                text: this.title
+            },
             calculable : true,
             grid: {
                 top: '12%',
                 left: '1%',
                 right: '1%',
+                bottom: '20%',
                 containLabel: true
             },
             xAxis: [
@@ -54,14 +69,17 @@ class GraphCard extends HTMLElement {
             ],
             yAxis: [
                 {
-                    type : 'value'
+                    type : 'value',
+                    min : 'dataMin'
                 }
             ],
             dataZoom: [
                 {
+                    type: 'slider',
                     show: true,
                     start: this.zoom,
-                    end: 100
+                    end: 100,
+                    bottom: '10%'
                 },
                 {
                     type: 'inside',
@@ -81,9 +99,10 @@ class GraphCard extends HTMLElement {
             series : []
         };
 
+        this.legend = [];
         for (const entity of this.entities) {
             this.update_options.series.push({
-                	smooth: entity.smooth || true,
+                	smooth: entity.smooth || false,
                     name: entity.name || '',
                     type: entity.type || 'line',
                     areaStyle: entity.areaStyle || null,
@@ -92,7 +111,8 @@ class GraphCard extends HTMLElement {
                 });
         }
 
-    	this.getHistory();
+
+    	
     }
 
     getHistory(update) {
@@ -108,7 +128,10 @@ class GraphCard extends HTMLElement {
         const filter = startTime.toISOString() + '?end_time=' + endTime.toISOString() + '&filter_entity_id=' + this.entity_ids.join(',');
 
         const prom = this._hass.callApi('GET', 'history/period/' + filter).then(
-          stateHistory => this.formatData(stateHistory, update),
+          stateHistory => {
+              this.formatData(stateHistory, update);
+              //console.log(stateHistory);
+          },
           () => null
         );
     }
@@ -120,22 +143,34 @@ class GraphCard extends HTMLElement {
 		{
             var data = [];
             var entity_id = '';
+            var friendly_name = '';
             for (const state of stateHistory)
     		{
                 if (entity_id === '') {
                     entity_id = state.entity_id;
                 }
                 var d = new Date(state.last_changed);
+                var state_value = state.state
+                friendly_name = state.attributes.friendly_name;
+                
+                if (entity_id.startsWith("climate")) {
+                    state_value = state.attributes.current_temperature
+                    var d = new Date(state.last_updated);
+                }
                 data.push({
                     name: d.toString(),
                     value: [
                         [d.getFullYear(), d.getMonth() + 1, d.getDate()].join('/') + 'T' + d.toLocaleTimeString(),
-                        state.state
+                        state_value
                     ]
-                });
+                }); 
+                
+                
     		}
-    		
-    		allData[this.entity_ids.indexOf(entity_id)] = data;
+    		var index = this.entity_ids.indexOf(entity_id);
+    		allData[index] = data;
+    		this.update_options.series[index].name = friendly_name;
+    		this.legend[index] = friendly_name;
 		}
         
         if (!update) {
@@ -146,7 +181,7 @@ class GraphCard extends HTMLElement {
     }
     
     updateGraph(allData) {
-		
+		 
 	    /* Delta update. */
 	    var i = 0;
 	    for (const data of allData) {
@@ -157,15 +192,23 @@ class GraphCard extends HTMLElement {
     }
     
     drawGraph(allData) {
+        console.log(this)
         this.graph.hideLoading();
+        this.initial_options.legend = {
+                show : true,
+                data : this.legend,
+                type : 'scroll',
+                bottom: 'bottom'
+        };
 	    this.graph.setOption(this.initial_options);
-
+        
         //* Different set of options, to prevent the dataZoom being reset on each update. */
 	    var i = 0;
 	    for (const data of allData) {
 	        this.update_options.series[i].data = data;
 	        i++;
 	    }
+
 
 		this.graph.setOption(this.update_options);
 		
